@@ -37,12 +37,12 @@ packages:
     git: https://github.com/akshaymankar/foundation.git
     commit: 31d978d94d1493a53565e1050450c434e8808bd6
 - completed:
-    hackage: http-client-openssl-0.3.0.0@sha256:cd617e7bef6c3d8ac4587d7c623b80c35a15735d0142e56eca0ae1c8a67a1b5d,1548
+    hackage: string-random-0.1.2.0@sha256:db4f801dec1ec72cba7d662b9774da60ff54de6d05478e94478d6d730dc5034f,2439
     pantry-tree:
-      size: 387
-      sha256: 5712016dbe69a539ca265b8e1b248d499445a2a414ac3a8bc9c8a62bef0ffc6d
+      size: 489
+      sha256: 21c7e61fceea98d14b453fc74c947b715ce33fe4c665c65b1f28c6f417d4ab7e
   original:
-    hackage: http-client-openssl-0.3.0.0
+    hackage: string-random-0.1.2.0
 snapshots:
 - completed:
     size: 523448

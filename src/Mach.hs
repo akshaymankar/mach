@@ -1,20 +1,34 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric     #-}
 module Mach where
 
 import Bosh.Effects
+import Data.Aeson
+import Data.Aeson.Casing
+import Data.Aeson.TH
 import Bosh.Types      hiding (Release)
 import Data.Function   ((&))
 import Data.List       (isPrefixOf)
 import Lens.Micro
 import Polysemy
 import System.FilePath
+import Data.Text as T (unpack, Text)
 import Utils.Tar
 import Codec.Archive.Tar.Entry as Tar
 import Codec.Archive.Tar       as Tar
 import Numeric (readOct)
 import System.Posix.Types
+import System.Process.Typed
+import System.IO
+import Text.StringRandom
+import GHC.Generics
+import Lens.Micro.TH
+
+import qualified Data.Yaml as Yaml
+import qualified Data.ByteString.Lazy.Char8 as LBS
 
 {-|
 1. Download all releases
@@ -22,8 +36,8 @@ import System.Posix.Types
 1. Put all the compile package files in the given tar
 -}
 
-foo :: Member Bosh r => Manifest -> Tar.Entries Tar.FormatError -> Sem r [Tar.Entry]
-foo m osTar = do
+patchStemcellImage :: Member Bosh r => Manifest -> Tar.Entries Tar.FormatError -> Sem r [Tar.Entry]
+patchStemcellImage m osTar = do
   let rs = head (releases m)
       s = head (stemcells m)
       os = maybe "ubuntu-xenial" id (stemcellOs s)
@@ -59,3 +73,65 @@ foo m osTar = do
                         }
     toStemcellEntry (x,y) = let newBasePath = "./var/vcap/packages/" ++ x
                             in Tar.mapEntriesNoFail (changePath newBasePath) y
+
+{-
+1. run rake task in given docker container
+1. Open stemcell tar
+1. Update release.MF
+1. Save patched tar
+-}
+
+buildStemcell :: String -> IO String
+buildStemcell container = do
+  _ <- putStrLn "building stemcell"
+  version <- stringRandomIO "[a-z]{5}"
+  let cmd = proc "docker" ["exec", container
+                          , "bundle", "exec"
+                          , "rake"
+                          , "stemcell:build_with_local_os_image[google,kvm,ubuntu,xenial,/opt/bosh/tmp/patched-base-image.tgz,"
+                            ++ T.unpack version
+                            ++ "]"
+                          ]
+            & setStdout (useHandleClose stdout)
+            & setStderr (useHandleClose stderr)
+  runProcess_ cmd
+  return $ "bosh-stemcell-" ++ T.unpack version ++ "-google-kvm-ubuntu-xenial-go_agent.tgz"
+
+data StemcellManifest = StemcellManifest { smName :: Text
+                                        , smVersion :: Text
+                                        , smBoshProtocol :: Int
+                                        , smApiVersion :: Int
+                                        , smSha1 :: Text
+                                        , smOperatingSystem :: Text
+                                        , smStemcellFormats :: [Text]
+                                        , smCloudProperties :: Value
+                                        }
+  deriving (Show, Eq, Generic)
+makeLensesFor [ ("smName", "nameLens")
+              , ("smOperatingSystem", "osLens")
+              ] ''StemcellManifest
+
+
+-- patchStemcellManifest :: Tar.Entries Tar.FormatError -> [Tar.Entry]
+patchStemcellManifest :: Entries FormatError -> [Entry]
+patchStemcellManifest es =
+  let
+    newManifest :: StemcellManifest
+    newManifest = getFile "stemcell.MF" es
+            & maybe (error "manifest not found") id
+            & entryContent
+            & getFileContents
+            & maybe (error "stemcell.MF is not a file") id
+            & Yaml.decodeEither' . LBS.toStrict
+            & either (error . show) id
+            & nameLens .~ "bosh-google-kvm-ubuntu-xenial-mach-go_agent"
+            & osLens .~ "ubuntu-xenial-mach"
+    newManifestContents = LBS.fromStrict $ Yaml.encode newManifest
+    replaceManifest :: Entry -> Entry
+    replaceManifest e = if Tar.entryPath e == "stemcell.MF"
+                        then e & entryContentL .~ (NormalFile newManifestContents (LBS.length newManifestContents))
+                        else e
+    newEntries = Tar.mapEntriesNoFail replaceManifest
+  in entriesToList $ newEntries es
+
+$(deriveJSON (aesonPrefix snakeCase) ''StemcellManifest)

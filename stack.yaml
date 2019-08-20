@@ -48,7 +48,7 @@ extra-deps:
   commit: 31d978d94d1493a53565e1050450c434e8808bd6
   subdirs:
   - foundation
-- http-client-openssl-0.3.0.0
+- string-random-0.1.2.0
 # - /Users/axeman/work/http-client/http-client
 # Override default flag values for local packages and extra-deps
 # flags: {}
