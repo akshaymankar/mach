@@ -14,17 +14,23 @@ readTgz f = do
   & (fmap readTgzFromMemory)
 
 writeTgz :: FilePath -> [Entry] -> IO ()
-writeTgz f es = do
-  LBS.writeFile f $ GZ.compress $ Tar.write es
+writeTgz f = LBS.writeFile f . writeTgzToMemory
 
 readTgzFromMemory :: LBS.ByteString -> Entries Tar.FormatError
 readTgzFromMemory = Tar.read . GZ.decompress
+
+writeTgzToMemory :: [Entry] -> LBS.ByteString
+writeTgzToMemory = GZ.compress . Tar.write
 
 entryTarPathL :: Lens' Entry TarPath
 entryTarPathL f e = f (entryTarPath e) <&> \p' -> e {entryTarPath = p'}
 
 entryContentL :: Lens' Entry EntryContent
 entryContentL f e = f (entryContent e)  <&> \c' -> e {entryContent = c'}
+
+normalFileContentL :: Lens' EntryContent LBS.ByteString
+normalFileContentL f (NormalFile c _) = f c <&> \c' -> NormalFile c' (LBS.length c')
+normalFileContentL _ _ =  error "not a normal file"
 
 extractFile :: EntryContent -> LBS.ByteString
 extractFile (NormalFile bs _) = bs
@@ -40,6 +46,11 @@ getFile _ (Fail e) = error $ show e
 getFile name (Next e es) = if entryPath e == name
                            then Just e
                            else getFile name es
+
+isFile :: Entry -> Bool
+isFile e = case entryContent e of
+             NormalFile _ _ -> True
+             _ -> False
 
 getFileContents :: EntryContent -> Maybe LBS.ByteString
 getFileContents (NormalFile c _) = Just c

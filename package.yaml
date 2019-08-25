@@ -26,6 +26,7 @@ dependencies:
 - bytestring
 - connection
 - containers
+- cryptonite
 - data-default-class
 - filepath
 - hoauth2
@@ -43,11 +44,13 @@ dependencies:
 - scientific
 - string-random
 - tar
+- terminal-progress-bar
 - text
 - tls
 - typed-process
 - uri-bytestring
 - utf8-string
+- versions
 - x509
 - x509-store
 - yaml

@@ -24,6 +24,8 @@ data Manifest = Manifest { name           :: Text
                          , tags           :: Maybe (Map Text Text)
                          }  deriving (Show, Eq, Generic)
 
+
+
 data Release = Release { releaseName       :: Text
                        , releaseVersion    :: Text
                        , releaseUrl        :: Maybe Text

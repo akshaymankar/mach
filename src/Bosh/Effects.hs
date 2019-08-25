@@ -21,13 +21,15 @@ import Data.Aeson
 import Data.Aeson.Casing
 import Data.Aeson.TH
 import Data.ByteString.UTF8
-import Data.Text
+import Data.Text as T
 import GHC.Generics
 import Lens.Micro
 import Network.HTTP.Client
 import Network.HTTP.Types
 import Polysemy
 import Utils.HTTP
+import Utils.Tar
+import System.ProgressBar
 
 import qualified Codec.Archive.Tar          as Tar
 import qualified Codec.Compression.GZip     as GZ
@@ -63,7 +65,7 @@ data ReleaseVersion = ReleaseVersion { rvVersion            :: Text
                                      }
                       deriving (Show, Eq, Generic)
 
-data Task = Task {taskState :: Text}
+data Task = Task {taskState :: Text, taskDescription :: Text}
   deriving (Show, Eq, Generic)
 
 data BlobstoreObject = BlobstoreObject {boSha1 :: Text, boBlobstoreId :: String}
@@ -74,6 +76,7 @@ data Bosh m r where
   ExportRelease :: Deployment -> ExportReleaseOpts -> Bosh m BlobstoreObject
   ListReleases :: Bosh m [Release]
   DownloadBlobTar :: BlobstoreObject -> Bosh m (Tar.Entries Tar.FormatError)
+  UploadRelease :: [Tar.Entry] -> Bosh m ()
 
 makeSem ''Bosh
 
@@ -93,7 +96,17 @@ httpOut b (DownloadBlobTar BlobstoreObject{..}) = do
   withResponse downloadReq (manager b) $ \res -> do
     gzipped <- download res --mconcat <$> (brConsume $ responseBody res)
     return $ Tar.read $ GZ.decompress $ LBS.fromStrict gzipped
-
+httpOut b (UploadRelease tar) = do
+  let tgz = writeTgzToMemory tar
+  _ <- putStrLn "uploading"
+  req <- parseRequest (baseUrl b  <> "/releases")
+         & (>>= addAuthentication b)
+         & (fmap $ requestHeadersL <>~ [(hContentType, "application/x-compressed")])
+         & (fmap $ methodL .~ methodPost)
+         & (fmap $ requestBodyL .~ RequestBodyLBS tgz)
+         & (fmap $ redirectCountL .~ 0)
+  taskLoc <- withResponse req (manager b) extractTaskRedirect
+  waitForTask b taskLoc
 
 download :: Response BodyReader -> IO ByteString
 download res = do
@@ -101,13 +114,17 @@ download res = do
     Nothing -> error "no content length!!"
     Just len -> do
       BS.putStrLn $ "Bytes: " <> len
-      mconcat <$> go id
+      pb <- newProgressBar defStyle 10 (Progress 0 (read $ BS.unpack len) ())
+      x <- mconcat <$> go pb id
+      BS.putStrLn "Done"
+      return x
       where
-        go front = do
+        go pb front = do
           x <- responseBody res
           if BS.null x
             then return $ front []
-            else (putStrLn $ "Downloaded: " ++ (show $ BS.length x)) >> go (front . (x:))
+            else incProgress pb (BS.length x) >> go pb (front . (x:))
+            --(putStr $ "Downloaded: " ++ (show $ d + BS.length x) ++ "\r") >> go (d + BS.length x) (front . (x:))
 
 httpExportRelease
   :: BoshClient -> Deployment -> ExportReleaseOpts -> IO BlobstoreObject
@@ -129,6 +146,7 @@ httpExportRelease b deployment (ExportReleaseOpts{..}) = do
     & (>>= addAuthentication b)
   taskLoc <- withResponse req (manager b) extractTaskRedirect
   waitForTask b taskLoc
+  downloadTaskOutput b taskLoc
 
 extractTaskRedirect :: MonadThrow m => Response body -> m ByteString
 extractTaskRedirect res = do
@@ -138,31 +156,37 @@ extractTaskRedirect res = do
     Nothing          -> throwM $ MissingHeader hLocation
     Just redirectUrl -> return redirectUrl
 
-waitForTask :: FromJSON a => BoshClient -> ByteString -> IO a
+waitForTask :: BoshClient -> ByteString -> IO ()
 waitForTask b redirectUrl = do
-  req <- parseRequest (baseUrl b)
-  let origPort = port req
+  origPort <- port <$> parseRequest (baseUrl b)
   taskReq <- parseRequest (toString redirectUrl)
              & (mapped . portL) .~ origPort -- https://github.com/cloudfoundry/bosh/issues/1253
              & (mapped . redirectCountL) .~ 0
              & (>>= addAuthentication b)
   wait $ httpGet (manager b) taskReq
-  let outputReq = taskReq
-                  & requestPathL <>~ "/output"
-                  & queryStringL .~ "type=result"
-  httpGet (manager b) outputReq
-  -- LBS.putStrLn $ encode v
   where
     wait :: IO Task -> IO ()
     wait action = do
-      t <- action
-      if taskState t == "done"
+      t@Task{..} <- action
+      if taskState == "done"
       then return ()
       else do
-        when (taskState t == "error") $ throwM $ TaskFailed t
-        putStrLn "still waiting"
+        when (taskState == "error") $ throwM $ TaskFailed t
+        putStrLn $ "still waiting for task '"  <> T.unpack taskDescription <> "' state: '" <> T.unpack taskState <> "'"
         threadDelay $ 1 * seconds
         wait action
+
+downloadTaskOutput :: FromJSON a => BoshClient -> ByteString -> IO a
+downloadTaskOutput b redirectUrl = do
+  taskReq <- parseRequest (toString redirectUrl)
+             >>= addAuthentication b
+  origPort <- port <$> parseRequest (baseUrl b)
+  let outputReq = taskReq
+                  & portL .~ origPort -- https://github.com/cloudfoundry/bosh/issues/1253
+                  & redirectCountL .~ 0
+                  & requestPathL <>~ "/output"
+                  & queryStringL .~ "type=result"
+  httpGet (manager b) outputReq
 
 seconds :: Int
 seconds = 1_000_000
