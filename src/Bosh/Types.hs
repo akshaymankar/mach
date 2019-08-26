@@ -10,6 +10,8 @@ import Data.Text
 import GHC.Generics
 import Data.Aeson.TH
 import Data.Aeson.Casing
+import Lens.Micro.TH
+import Utils.Lens
 
 data Manifest = Manifest { name           :: Text
                          , directorUUID   :: Maybe Text
@@ -23,8 +25,6 @@ data Manifest = Manifest { name           :: Text
                          , variables      :: Maybe [Variable] -- According to docs this is required, but it is not
                          , tags           :: Maybe (Map Text Text)
                          }  deriving (Show, Eq, Generic)
-
-
 
 data Release = Release { releaseName       :: Text
                        , releaseVersion    :: Text
@@ -67,7 +67,6 @@ data Update = Update { updateCanaries        :: Int
                      , updateVmStrategy      :: Maybe Text
                      }  deriving (Show, Eq, Generic)
 
-
 data Features = Features { featuresConvergeVariables    :: Maybe Bool
                          , featuresRandomizeAZPlacement :: Maybe Bool
                          , featuresUseDNSAddresses      :: Maybe Bool
@@ -77,9 +76,22 @@ data Features = Features { featuresConvergeVariables    :: Maybe Bool
 
 data Addon = Addon { addonName    :: Text
                    , addonJobs    :: [Job]
-                   , addonInclude :: Maybe Value
+                   , addonInclude :: Maybe AddonInclude
                    , addonExclude :: Maybe Value
                    }  deriving (Show, Eq, Generic)
+
+data AddonInclude = AddonInclude { aiStemcell :: Maybe [AddonIncludeStemcell]
+                                 , aiDeployments :: Maybe [Text]
+                                 , aiJobs :: Maybe Value
+                                 , aiInstanceGroups :: Maybe [Text]
+                                 , aiLifecycle  :: Maybe Text
+                                 , aiNetworks :: Maybe [Text]
+                                 , aiTeams :: Maybe [Text]
+                                 }  deriving (Show, Eq, Generic)
+
+
+data AddonIncludeStemcell = AddonIncludeStemcell { aisOs :: Text }
+                          deriving (Show, Eq, Generic)
 
 data Variable = Variable { varName       :: Text
                          , varType       :: Text -- can be made enum
@@ -204,6 +216,8 @@ data BoshAgentOpts = BoshAgentOpts { baoSettings :: Maybe Value
                                    }  deriving (Show, Eq, Generic)
 
 $(deriveJSON (aesonPrefix snakeCase) ''Addon)
+$(deriveJSON (aesonPrefix snakeCase) ''AddonInclude)
+$(deriveJSON (aesonPrefix snakeCase) ''AddonIncludeStemcell)
 $(deriveJSON (aesonPrefix snakeCase) ''BoshAgentOpts)
 $(deriveJSON (aesonPrefix snakeCase) ''ConsumeFrom)
 $(deriveJSON (aesonPrefix snakeCase) ''Enableable)
@@ -222,3 +236,13 @@ $(deriveJSON (aesonPrefix snakeCase) ''Stemcell)
 $(deriveJSON (aesonPrefix snakeCase) ''Update)
 $(deriveJSON (aesonPrefix snakeCase) ''VmResources)
 $(deriveJSON (aesonPrefix snakeCase) ''Variable)
+
+Prelude.concat <$> mapM (makeLensesWith myLensRules) [ ''Manifest
+                                                     , ''Release
+                                                     , ''InstanceGroup
+                                                     , ''Job
+                                                     , ''Stemcell
+                                                     , ''Addon
+                                                     , ''AddonInclude
+                                                     , ''AddonIncludeStemcell
+                                                     ]

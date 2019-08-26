@@ -25,7 +25,6 @@ import Lens.Micro.TH
 import Logging
 import Numeric                 (readOct)
 import Polysemy
-import Polysemy.Async
 import Prelude                 hiding (log)
 import System.FilePath
 import System.IO
@@ -33,6 +32,7 @@ import System.Posix.Types
 import System.Process.Typed
 import Text.StringRandom
 import Utils.Tar
+import Utils.Lens
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.Yaml                  as Yaml
@@ -141,10 +141,10 @@ addPackagesToOS releaseTar osTar =
 1. Save patched tar
 -}
 
-buildStemcell :: String -> IO String
-buildStemcell container = do
+buildStemcell :: String -> String -> IO ()
+buildStemcell newStemcellVersion container = do
   _ <- putStrLn "building stemcell"
-  v <- stringRandomIO "[a-z]{5}"
+  -- v <- stringRandomIO "[a-z]{5}"
   stdoutFile <- openFile "/tmp/build-stemcell.stdout" WriteMode
   stderrFile <- openFile "/tmp/build-stemcell.stderr" WriteMode
   _ <- putStrLn "Building Stemcell"
@@ -152,14 +152,13 @@ buildStemcell container = do
                           , "bundle", "exec"
                           , "rake"
                           , "stemcell:build_with_local_os_image[google,kvm,ubuntu,xenial,/opt/bosh/tmp/patched-base-image.tgz,"
-                            ++ T.unpack v
+                            ++ newStemcellVersion
                             ++ "]"
                           ]
             & setStdout (useHandleClose stdoutFile)
             & setStderr (useHandleClose stderrFile)
   runProcess_ cmd
-  _ <- putStrLn "Done building stemcell"
-  return $ T.unpack v
+  putStrLn "Done building stemcell"
 
 data StemcellManifest = StemcellManifest { smName            :: Text
                                          , smVersion         :: Text
@@ -171,9 +170,7 @@ data StemcellManifest = StemcellManifest { smName            :: Text
                                          , smCloudProperties :: Value
                                          }
   deriving (Show, Eq, Generic)
-makeLensesFor [ ("smName", "nameL")
-              , ("smOperatingSystem", "operatingSystemL")
-              ] ''StemcellManifest
+makeLensesWith myLensRules ''StemcellManifest
 
 patchStemcellManifest :: Entries FormatError -> [Entry]
 patchStemcellManifest es =
@@ -186,8 +183,8 @@ patchStemcellManifest es =
             & maybe (error "stemcell.MF is not a file") id
             & Yaml.decodeEither' . LBS.toStrict
             & either (error . show) id
-            & nameL .~ "bosh-google-kvm-ubuntu-xenial-mach-go_agent"
-            & operatingSystemL .~ "ubuntu-xenial-mach"
+            & smNameL .~ "bosh-google-kvm-ubuntu-xenial-mach-go_agent"
+            & smOperatingSystemL .~ "ubuntu-xenial-mach"
     newManifestContents = LBS.fromStrict $ Yaml.encode newManifest
     replaceManifest :: Entry -> Entry
     replaceManifest e = if Tar.entryPath e == "stemcell.MF"
@@ -336,8 +333,26 @@ data JobSpec = JobSpec { jsName       :: Text
 jsPackagesL :: Lens' JobSpec (Maybe Value)
 jsPackagesL f j = f (jsPackages j) <&> \ps' -> j {jsPackages = ps'}
 
-patchManifest :: Manifest -> Manifest
-patchManifest = undefined
+patchManifest :: Text -> Text -> Manifest -> Manifest
+patchManifest deploymentName newStemcellVersion m =
+  m
+  & nameL .~ deploymentName
+  & releasesL . each
+    . releaseNameL <>~ "-mach"
+  & instanceGroupsL . each
+    . igJobsL . each
+    . jobReleaseL <>~ "-mach"
+  & stemcellsL . each
+    . stemcellOsL . mapped <>~ "-mach"
+  & stemcellsL . each
+    . stemcellVersionL .~ newStemcellVersion
+  & addonsL . mapped . each
+    . addonJobsL . each
+    . jobReleaseL <>~ "-mach"
+  & addonsL . mapped . each
+    . addonIncludeL . mapped
+    . aiStemcellL . mapped . each
+    . aisOsL <>~ "-mach"
 
 $(deriveJSON (aesonPrefix snakeCase) ''StemcellManifest)
 $(deriveJSON (aesonPrefix snakeCase) ''JobSpec)

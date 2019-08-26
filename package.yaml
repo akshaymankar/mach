@@ -44,6 +44,7 @@ dependencies:
 - scientific
 - string-random
 - tar
+- template-haskell
 - terminal-progress-bar
 - text
 - tls
