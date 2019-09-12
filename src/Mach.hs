@@ -30,7 +30,6 @@ import System.FilePath
 import System.IO
 import System.Posix.Types
 import System.Process.Typed
-import Text.StringRandom
 import Utils.Tar
 import Utils.Lens
 
@@ -46,31 +45,16 @@ data NamedReleaseTar = NamedReleaseTar { nrtName :: Text
 makeLensesFor [("nrtTar", "nrtTarL")] ''NamedReleaseTar
 
 
-{-|
-1. Download all releases
-1. Get all compiled packages
-1. Put all the compile package files in the given tar
--}
 patchStemcellImage ::
   (Member Bosh r, Member Log r)
   => Manifest -> Entries FormatError -> Sem r ([NamedReleaseTar], OSTar)
 patchStemcellImage m osTar = do
-  let os = maybe "ubuntu-xenial" id (stemcellOs $ head $ stemcells m)
-      osVer = stemcellVersion $ head $ stemcells m
-      d = name m
-  allReleases <- listReleases
-  log $ (show $ length allReleases) <> " releases found"
-  releaseTars <- map (toExportReleaseOpts allReleases os osVer) (releases m)
-                 & map (getReleaseTar d)
-                 & sequence
+  releaseTars <- retrieveReleaseTars m
   log "Patching Stemcell"
   let newImage = foldr (addPackagesToOS . nrtTar) (entriesToList osTar) releaseTars
       packagesDir = mkDir $ either (error) id $ toTarPath True "./var/vcap/packages/"
   return (releaseTars, packagesDir : newImage)
   where
-    toExportReleaseOpts allReleases stemcell sv r =
-      let rv = getReleaseVersion (releaseName r) (releaseVersion r) allReleases
-      in ExportReleaseOpts (releaseName r) rv stemcell sv
     mkDir p = Tar.Entry { entryTarPath = p
                         , entryContent = Tar.Directory
                         , entryPermissions = CMode $ fst $ head $ readOct "0755"
@@ -78,6 +62,21 @@ patchStemcellImage m osTar = do
                         , entryTime = 0
                         , entryFormat = GnuFormat
                         }
+
+retrieveReleaseTars :: (Member Bosh r, Member Log r) => Manifest -> Sem r [NamedReleaseTar]
+retrieveReleaseTars m = do
+  let os = maybe "ubuntu-xenial" id (stemcellOs $ head $ stemcells m)
+      osVer = stemcellVersion $ head $ stemcells m
+      d = name m
+  allReleases <- listReleases
+  log $ (show $ length allReleases) <> " releases found"
+  map (toExportReleaseOpts allReleases os osVer) (releases m)
+    & map (getReleaseTar d)
+    & sequence
+  where
+    toExportReleaseOpts allReleases stemcell sv r =
+      let rv = getReleaseVersion (releaseName r) (releaseVersion r) allReleases
+      in ExportReleaseOpts (releaseName r) rv stemcell sv
 
 uploadReleaseTar ::
   (Member Bosh r, Member Log r) => NamedReleaseTar -> Sem r ()
@@ -134,12 +133,6 @@ addPackagesToOS releaseTar osTar =
 
     toStemcellEntry (x,y) = let newBasePath = "./var/vcap/packages/" ++ x
                             in Tar.mapEntriesNoFail (changePath newBasePath) y
-{-
-1. run rake task in given docker container
-1. Open stemcell tar
-1. Update release.MF
-1. Save patched tar
--}
 
 buildStemcell :: String -> String -> IO ()
 buildStemcell newStemcellVersion container = do
@@ -217,11 +210,6 @@ makeLensesFor [ ("rmjVersion", "rmjVersionL")
               , ("rmjSha1", "rmjSha1L")
               ] ''RMJob
 
-{-
-1. Remove compiled releases entries
-1. Open each job remove packages from specs, replace the spec file entry, gzip the tar, replace the jobs tgz
-1. Calculate new shasum for each job, replace the shasum in release.MF, replace the entry
--}
 patchRelease :: [Entry] -> [Entry]
 patchRelease es =
   map patchIfJob es
